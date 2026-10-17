@@ -366,3 +366,44 @@ def test_socks5_reply_error(
     assert reply == SOCKS5Reply(
         reply_code=error_code, atype=expected_atype, addr=expected_addr, port=1080
     )
+
+
+def test_socks5_reply_error_with_unknown_atype(
+    authenticated_conn: SOCKS5Connection,
+) -> None:
+    # Tailscale SOCKS5A and similar proxies may return ATYP 0x00 on failure.
+    data = b"".join(
+        [
+            b"\x05",
+            SOCKS5ReplyCode.GENERAL_SERVER_FAILURE,
+            b"\x00",
+            b"\x00",  # unknown ATYP
+            b"\x00\x00\x00\x00",
+            (0).to_bytes(2, byteorder="big"),
+        ]
+    )
+    reply = authenticated_conn.receive_data(data)
+    assert authenticated_conn.state == SOCKS5State.MUST_CLOSE
+    assert reply == SOCKS5Reply(
+        reply_code=SOCKS5ReplyCode.GENERAL_SERVER_FAILURE,
+        atype=SOCKS5AType.UNKNOWN,
+        addr="",
+        port=0,
+    )
+
+
+def test_socks5_reply_success_rejects_unknown_atype(
+    authenticated_conn: SOCKS5Connection,
+) -> None:
+    data = b"".join(
+        [
+            b"\x05",
+            SOCKS5ReplyCode.SUCCEEDED,
+            b"\x00",
+            b"\x00",
+            b"\x00\x00\x00\x00",
+            (0).to_bytes(2, byteorder="big"),
+        ]
+    )
+    with pytest.raises(ProtocolError):
+        authenticated_conn.receive_data(data)

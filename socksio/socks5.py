@@ -35,6 +35,8 @@ class SOCKS5AType(bytes, enum.Enum):
     IPV4_ADDRESS = b"\x01"
     DOMAIN_NAME = b"\x03"
     IPV6_ADDRESS = b"\x04"
+    # Not in RFC 1928; some proxies use 0x00 on unsuccessful replies.
+    UNKNOWN = b"\x00"
 
     @classmethod
     def from_atype(cls, atype: AddressType) -> "SOCKS5AType":
@@ -254,16 +256,36 @@ class SOCKS5Reply(typing.NamedTuple):
             raise ProtocolError("Malformed reply")
 
         try:
-            atype = SOCKS5AType(data[3:4])
-
-            return cls(
-                reply_code=SOCKS5ReplyCode(data[1:2]),
-                atype=atype,
-                addr=decode_address(AddressType.from_socks5_atype(atype), data[4:-2]),
-                port=int.from_bytes(data[-2:], byteorder="big"),
-            )
+            reply_code = SOCKS5ReplyCode(data[1:2])
         except ValueError as exc:
             raise ProtocolError("Malformed reply") from exc
+
+        try:
+            atype = SOCKS5AType(data[3:4])
+        except ValueError as exc:
+            raise ProtocolError("Malformed reply") from exc
+
+        try:
+            addr = decode_address(
+                AddressType.from_socks5_atype(atype), data[4:-2]
+            )
+        except ValueError as exc:
+            # Some proxies (e.g. Tailscale SOCKS5A) return ATYP 0x00 on
+            # failure. Keep the reply code usable instead of treating the
+            # whole message as malformed. Successful replies still require a
+            # known address type.
+            if (
+                reply_code == SOCKS5ReplyCode.SUCCEEDED
+                or atype != SOCKS5AType.UNKNOWN
+            ):
+                raise ProtocolError("Malformed reply") from exc
+            addr = ""
+        return cls(
+            reply_code=reply_code,
+            atype=atype,
+            addr=addr,
+            port=int.from_bytes(data[-2:], byteorder="big"),
+        )
 
 
 class SOCKS5Datagram(typing.NamedTuple):
